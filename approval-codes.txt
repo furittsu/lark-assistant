@@ -1,0 +1,2 @@
+# 每行一个 approval_code
+# 例如：7C37B6A2-XXXX-XXXX-XXXX-XXXXXXXXXXXX

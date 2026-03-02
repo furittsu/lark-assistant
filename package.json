@@ -7,7 +7,8 @@
     "dev": "node index.js",
     "start": "node index.js",
     "ws": "node ws-worker.js",
-    "review": "node review-now.js"
+    "review": "node review-now.js",
+    "subscribe:approvals": "node subscribe-approvals.js approval-codes.txt"
   },
   "keywords": [],
   "author": "",
