@@ -305,27 +305,47 @@ async function fetchApprovalDetailSmart(chatId, text) {
 
 async function queryApprovalInstances({ serialNo, instanceTitle, applicantOpenId }) {
   try {
-    const data = {
-      instance_status: 'ALL',
-      locale: 'zh-CN',
-    };
-    if (serialNo) data.instance_external_id = serialNo;
-    if (instanceTitle) data.instance_title = instanceTitle;
-    if (applicantOpenId) data.user_id = applicantOpenId;
+    const list = [];
+    let pageToken = '';
+    let page = 0;
 
-    const res = await client.approval.v4.instance.query({
-      data,
-      params: {
-        page_size: 50,
-        user_id_type: 'open_id',
-      },
-    });
+    while (page < 10) {
+      page += 1;
+      const data = {
+        instance_status: 'ALL',
+        locale: 'zh-CN',
+      };
+      if (instanceTitle) data.instance_title = instanceTitle;
+      if (applicantOpenId) data.user_id = applicantOpenId;
 
-    if (res.code !== 0) {
-      return { ok: false, error: `${res.msg || '审批查询失败'} (code=${res.code})` };
+      const res = await client.approval.v4.instance.query({
+        data,
+        params: {
+          page_size: 100,
+          page_token: pageToken || undefined,
+          user_id_type: 'open_id',
+        },
+      });
+
+      if (res.code !== 0) {
+        return { ok: false, error: `${res.msg || '审批查询失败'} (code=${res.code})` };
+      }
+
+      const pageList = res?.data?.instance_list || [];
+      list.push(...pageList);
+
+      if (serialNo) {
+        const hit = pageList.find((item) => `${item?.instance?.serial_id || ''}` === `${serialNo}`);
+        if (hit) {
+          return { ok: true, list };
+        }
+      }
+
+      pageToken = res?.data?.page_token || '';
+      if (!pageToken) break;
     }
 
-    return { ok: true, list: res?.data?.instance_list || [] };
+    return { ok: true, list };
   } catch (err) {
     return { ok: false, error: err.message };
   }
