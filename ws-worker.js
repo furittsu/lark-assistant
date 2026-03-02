@@ -305,9 +305,43 @@ async function fetchApprovalDetailSmart(chatId, text) {
 
 async function queryApprovalInstances({ serialNo, instanceTitle, applicantOpenId }) {
   try {
+    if (serialNo) {
+      // 先按编号多路尝试，避免无条件查询被拒绝。
+      const quickChecks = [
+        { instance_code: serialNo },
+        { instance_external_id: serialNo },
+      ];
+
+      for (const criteria of quickChecks) {
+        const res = await client.approval.v4.instance.query({
+          data: {
+            ...criteria,
+            instance_status: 'ALL',
+            locale: 'zh-CN',
+          },
+          params: {
+            page_size: 20,
+            user_id_type: 'open_id',
+          },
+        });
+
+        if (res.code === 0 && (res?.data?.instance_list || []).length > 0) {
+          return { ok: true, list: res.data.instance_list };
+        }
+      }
+    }
+
     const list = [];
     let pageToken = '';
     let page = 0;
+
+    // 没有任何可用条件时，直接返回可读错误，避免 1390001。
+    if (!instanceTitle && !applicantOpenId) {
+      return {
+        ok: false,
+        error: '仅凭该编号无法定位实例。请先转发审批卡片，或发送“审核 编号 + 审批标题”。',
+      };
+    }
 
     while (page < 10) {
       page += 1;
