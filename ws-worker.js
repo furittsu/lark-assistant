@@ -27,17 +27,33 @@ const wsClient = new Lark.WSClient({
 });
 
 const handlers = {};
+const seenEventIds = new Set();
+
+function seenRecently(eventId) {
+  if (!eventId) return false;
+  if (seenEventIds.has(eventId)) return true;
+  seenEventIds.add(eventId);
+  setTimeout(() => seenEventIds.delete(eventId), 10 * 60 * 1000);
+  return false;
+}
+
 for (const eventType of EVENT_TYPES) {
   handlers[eventType] = async (data) => {
+    if (seenRecently(data?.event_id)) {
+      return { ok: true };
+    }
+
     console.log(`[WS EVENT] ${eventType}`);
     console.log(JSON.stringify(data));
 
-    const suggestion = await getAiSuggestion(
-      `你是审批助手。请基于以下事件给出：建议结论、风险点、建议操作。事件：${JSON.stringify(data)}`
-    );
-    console.log('[AI SUGGESTION]', suggestion);
+    // 先快速回执，AI 逻辑异步执行，避免飞书超时重推。
+    queueMicrotask(async () => {
+      const suggestion = await getAiSuggestion(
+        `你是审批助手。请基于以下事件给出：建议结论、风险点、建议操作。事件：${JSON.stringify(data)}`
+      );
+      console.log('[AI SUGGESTION]', suggestion);
+    });
 
-    // 长连接事件回执内容可选，这里不回写卡片，仅记录日志
     return { ok: true };
   };
 }
