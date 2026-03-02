@@ -1,0 +1,58 @@
+{
+  "approval_type": "AP2-3 报价及折扣",
+  "decision_policy": {
+    "manual_only": true,
+    "risk_threshold": {
+      "approve_suggestion_max": 30,
+      "manual_review_min": 31,
+      "reject_suggestion_min": 71
+    }
+  },
+  "required_fields": [
+    "客户编码",
+    "客户名称",
+    "客户等级",
+    "申请折扣率",
+    "标准折扣率",
+    "折扣原因",
+    "毛利率",
+    "附件清单"
+  ],
+  "rules": [
+    {
+      "id": "R1",
+      "name": "字段完整性",
+      "type": "required",
+      "description": "required_fields 中任一缺失，必须人工复核，不建议通过"
+    },
+    {
+      "id": "R2",
+      "name": "超阈值折扣",
+      "type": "threshold",
+      "description": "申请折扣率 > 标准折扣率 + 5%，风险显著上升"
+    },
+    {
+      "id": "R3",
+      "name": "低毛利风险",
+      "type": "threshold",
+      "description": "毛利率 < 15% 时，不建议直接通过"
+    },
+    {
+      "id": "R4",
+      "name": "理由质量",
+      "type": "quality",
+      "description": "折扣原因必须具体，可追溯，不能是“客户要求”“市场原因”等空泛描述"
+    }
+  ],
+  "output_format": {
+    "fields": [
+      "建议结论",
+      "风险分",
+      "命中规则",
+      "通过理由",
+      "风险点",
+      "需补充材料",
+      "给审批系统的建议填写内容"
+    ]
+  }
+}

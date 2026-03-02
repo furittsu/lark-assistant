@@ -6,7 +6,8 @@
   "scripts": {
     "dev": "node index.js",
     "start": "node index.js",
-    "ws": "node ws-worker.js"
+    "ws": "node ws-worker.js",
+    "review": "node review-now.js"
   },
   "keywords": [],
   "author": "",
