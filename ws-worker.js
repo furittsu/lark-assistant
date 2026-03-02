@@ -313,20 +313,25 @@ async function queryApprovalInstances({ serialNo, instanceTitle, applicantOpenId
       ];
 
       for (const criteria of quickChecks) {
-        const res = await client.approval.v4.instance.query({
-          data: {
-            ...criteria,
-            instance_status: 'ALL',
-            locale: 'zh-CN',
-          },
-          params: {
-            page_size: 20,
-            user_id_type: 'open_id',
-          },
-        });
+        try {
+          const res = await client.approval.v4.instance.query({
+            data: {
+              ...criteria,
+              instance_status: 'ALL',
+              locale: 'zh-CN',
+            },
+            params: {
+              page_size: 20,
+              user_id_type: 'open_id',
+            },
+          });
 
-        if (res.code === 0 && (res?.data?.instance_list || []).length > 0) {
-          return { ok: true, list: res.data.instance_list };
+          if (res.code === 0 && (res?.data?.instance_list || []).length > 0) {
+            return { ok: true, list: res.data.instance_list };
+          }
+        } catch (err) {
+          // 编号直查失败时继续执行兜底策略
+          console.warn('[QUERY QUICK CHECK MISS]', err.message);
         }
       }
     }
@@ -335,19 +340,17 @@ async function queryApprovalInstances({ serialNo, instanceTitle, applicantOpenId
     let pageToken = '';
     let page = 0;
 
-    // 没有任何可用条件时，直接返回可读错误，避免 1390001。
-    if (!instanceTitle && !applicantOpenId) {
-      return {
-        ok: false,
-        error: '仅凭该编号无法定位实例。请先转发审批卡片，或发送“审核 编号 + 审批标题”。',
-      };
-    }
+    const now = Date.now();
+    const from = String(now - 90 * 24 * 60 * 60 * 1000);
+    const to = String(now + 60 * 1000);
 
     while (page < 10) {
       page += 1;
       const data = {
         instance_status: 'ALL',
         locale: 'zh-CN',
+        instance_start_time_from: from,
+        instance_start_time_to: to,
       };
       if (instanceTitle) data.instance_title = instanceTitle;
       if (applicantOpenId) data.user_id = applicantOpenId;
