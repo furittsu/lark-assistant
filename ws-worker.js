@@ -132,8 +132,26 @@ function parseJsonSafe(text) {
 
 function extractInstanceId(url) {
   if (!url || typeof url !== 'string') return '';
-  const m = url.match(/[?&]instanceId=(\d+)/);
-  return m?.[1] || '';
+
+  // 1) 直接 query: ...?instanceId=123
+  let m = url.match(/[?&]instanceId=(\d+)/i);
+  if (m?.[1]) return m[1];
+
+  // 2) 审批卡常见场景：instanceId 被 URL 编码在 path 参数里
+  // 例如: path=...%3FinstanceId%3D123%26...
+  let decoded = url;
+  for (let i = 0; i < 3; i += 1) {
+    try {
+      decoded = decodeURIComponent(decoded);
+    } catch {
+      break;
+    }
+
+    m = decoded.match(/instanceId=(\d+)/i);
+    if (m?.[1]) return m[1];
+  }
+
+  return '';
 }
 
 function getRuleProfile(text) {
