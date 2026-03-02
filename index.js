@@ -20,11 +20,19 @@ app.post('/webhook/lark/events', async (req, res) => {
   }
 
   console.log('[LARK EVENT]', JSON.stringify(body));
+  // 飞书要求快速响应，先返回成功，后续再异步处理。
+  res.json({ code: 0, msg: 'ok' });
 
-  const suggestion = await getAiSuggestion('请根据审批要点给出通过/拒绝建议，并列出风险点。');
-  console.log('[AI SUGGESTION]', suggestion);
+  try {
+    const suggestion = await getAiSuggestion('请根据审批要点给出通过/拒绝建议，并列出风险点。');
+    console.log('[AI SUGGESTION]', suggestion);
+  } catch (err) {
+    console.error('[AI ERROR]', err.message);
+  }
+});
 
-  return res.json({ code: 0, msg: 'ok' });
+app.get('/webhook/lark/events', (_, res) => {
+  res.status(200).send('ok');
 });
 
 app.post('/webhook/lark/card-actions', async (req, res) => {
