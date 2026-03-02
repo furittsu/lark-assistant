@@ -32,6 +32,7 @@ const wsClient = new Lark.WSClient({
 
 const handlers = {};
 const seenEventIds = new Set();
+const chatContext = new Map();
 
 function seenRecently(eventId) {
   if (!eventId) return false;
@@ -72,7 +73,23 @@ async function handleMessageEvent(data) {
   const rawContent = data?.message?.content || '{}';
   const msgType = data?.message?.message_type;
 
-  if (!chatId || msgType !== 'text') {
+  if (!chatId) {
+    return;
+  }
+
+  if (msgType === 'interactive') {
+    const card = parseJsonSafe(rawContent);
+    const cardUrl = card?.card_link?.url || card?.card_link?.pc_url || '';
+    const instanceId = extractInstanceId(cardUrl);
+    if (instanceId) {
+      const prev = chatContext.get(chatId) || {};
+      chatContext.set(chatId, { ...prev, instanceId, card });
+      await sendText(chatId, '已收到审批卡片。请发送“审核”或“审核 + 你的规则”，我会按审批详情自动分析。');
+    }
+    return;
+  }
+
+  if (msgType !== 'text') {
     return;
   }
 
@@ -83,18 +100,40 @@ async function handleMessageEvent(data) {
     return;
   }
 
+  const ctx = chatContext.get(chatId) || {};
+  let sourceText = text;
+
+  if (ctx.instanceId) {
+    const detail = await fetchApprovalDetail(ctx.instanceId);
+    if (detail.ok) {
+      sourceText = `${text}\n\n[审批详情]\n${detail.content}`;
+    } else {
+      await sendText(chatId, `已识别到审批卡片，但读取详情失败：${detail.error}\n请确认应用已开通审批读取权限。`);
+    }
+  }
+
   const ruleProfile = getRuleProfile(text);
-  const result = await reviewApprovalText(text, ruleProfile);
+  const result = await reviewApprovalText(sourceText, ruleProfile);
   await sendText(chatId, result);
 }
 
 function extractText(content) {
+  const parsed = parseJsonSafe(content);
+  return (parsed?.text || '').trim();
+}
+
+function parseJsonSafe(text) {
   try {
-    const parsed = JSON.parse(content);
-    return (parsed?.text || '').trim();
+    return JSON.parse(text || '{}');
   } catch {
-    return '';
+    return {};
   }
+}
+
+function extractInstanceId(url) {
+  if (!url || typeof url !== 'string') return '';
+  const m = url.match(/[?&]instanceId=(\d+)/);
+  return m?.[1] || '';
 }
 
 function getRuleProfile(text) {
@@ -150,6 +189,36 @@ async function sendText(chatId, text) {
     });
   } catch (err) {
     console.error('[SEND MESSAGE ERROR]', err.message);
+  }
+}
+
+async function fetchApprovalDetail(instanceId) {
+  try {
+    const res = await client.approval.v4.instance.get({
+      path: {
+        instance_id: instanceId,
+      },
+      params: {
+        locale: 'zh-CN',
+      },
+    });
+
+    if (res.code !== 0 || !res.data) {
+      return { ok: false, error: `${res.msg || '审批接口返回异常'} (code=${res.code})` };
+    }
+
+    const d = res.data;
+    const content = [
+      `审批名称: ${d.approval_name || ''}`,
+      `编号: ${d.serial_number || ''}`,
+      `状态: ${d.status || ''}`,
+      `申请人(open_id): ${d.open_id || ''}`,
+      `表单: ${d.form || ''}`,
+    ].join('\n');
+
+    return { ok: true, content };
+  } catch (err) {
+    return { ok: false, error: err.message };
   }
 }
 
