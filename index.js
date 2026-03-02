@@ -9,37 +9,40 @@ app.use(express.json({ limit: '2mb' }));
 const PORT = process.env.PORT || 3000;
 
 app.get('/', (_, res) => {
-  res.send('Lark approval assistant is running.');
-});
-
-app.post('/webhook/lark/events', async (req, res) => {
-  const body = req.body || {};
-
-  if (body.type === 'url_verification' && body.challenge) {
-    return res.json({ challenge: body.challenge });
-  }
-
-  console.log('[LARK EVENT]', JSON.stringify(body));
-  // 飞书要求快速响应，先返回成功，后续再异步处理。
-  res.json({ code: 0, msg: 'ok' });
-
-  try {
-    const suggestion = await getAiSuggestion('请根据审批要点给出通过/拒绝建议，并列出风险点。');
-    console.log('[AI SUGGESTION]', suggestion);
-  } catch (err) {
-    console.error('[AI ERROR]', err.message);
-  }
-});
-
-app.get('/webhook/lark/events', (_, res) => {
   res.status(200).send('ok');
 });
 
-app.post('/webhook/lark/card-actions', async (req, res) => {
+// 先提供一个不依赖任何业务逻辑的极速探活接口
+app.all('/healthz', (_, res) => {
+  res.status(200).json({ ok: true, ts: Date.now() });
+});
+
+app.all('/webhook/lark/events', (req, res) => {
+  const body = req.body || {};
+
+  if (body.type === 'url_verification' && body.challenge) {
+    return res.status(200).json({ challenge: body.challenge });
+  }
+
+  // 先快速应答，避免飞书3秒超时
+  res.status(200).json({ code: 0, msg: 'ok' });
+
+  // 异步处理，不影响飞书响应
+  queueMicrotask(async () => {
+    try {
+      console.log('[LARK EVENT]', JSON.stringify(body));
+      const suggestion = await getAiSuggestion('请根据审批要点给出通过/拒绝建议，并列出风险点。');
+      console.log('[AI SUGGESTION]', suggestion);
+    } catch (err) {
+      console.error('[AI ERROR]', err.message);
+    }
+  });
+});
+
+app.all('/webhook/lark/card-actions', (req, res) => {
   const body = req.body || {};
   console.log('[CARD ACTION]', JSON.stringify(body));
-
-  return res.json({
+  return res.status(200).json({
     toast: {
       type: 'success',
       content: '已收到你的操作，后续会执行审批动作。'
