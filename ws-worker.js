@@ -33,6 +33,7 @@ const wsClient = new Lark.WSClient({
 const handlers = {};
 const seenEventIds = new Set();
 const chatContext = new Map();
+const PENDING_TTL_MS = 30 * 1000;
 
 function seenRecently(eventId) {
   if (!eventId) return false;
@@ -84,7 +85,27 @@ async function handleMessageEvent(data) {
     if (instanceId) {
       const prev = chatContext.get(chatId) || {};
       chatContext.set(chatId, { ...prev, instanceId, card });
-      await sendText(chatId, '已收到审批卡片。请发送“审核”或“审核 + 你的规则”，我会按审批详情自动分析。');
+
+      // 乱序容错：若先收到了“审核”文本，再收到卡片，则自动继续审核。
+      if (prev.pendingReviewText && Date.now() - prev.pendingAt < PENDING_TTL_MS) {
+        const detail = await fetchApprovalDetail(instanceId);
+        if (!detail.ok) {
+          await sendText(chatId, `已收到审批卡片，但读取详情失败：${detail.error}\n请确认应用已开通审批读取权限。`);
+          return;
+        }
+
+        const sourceText = `${prev.pendingReviewText}\n\n[审批详情]\n${detail.content}`;
+        const ruleProfile = getRuleProfile(prev.pendingReviewText);
+        const result = await reviewApprovalText(sourceText, ruleProfile);
+        await sendText(chatId, result);
+
+        const latest = chatContext.get(chatId) || {};
+        delete latest.pendingReviewText;
+        delete latest.pendingAt;
+        chatContext.set(chatId, latest);
+      } else {
+        await sendText(chatId, '已收到审批卡片。请发送“审核”或“审核 + 你的规则”，我会按审批详情自动分析。');
+      }
     }
     return;
   }
@@ -102,6 +123,16 @@ async function handleMessageEvent(data) {
 
   const ctx = chatContext.get(chatId) || {};
   let sourceText = text;
+
+  if (!ctx.instanceId) {
+    chatContext.set(chatId, {
+      ...ctx,
+      pendingReviewText: text,
+      pendingAt: Date.now(),
+    });
+    await sendText(chatId, '我先记下你的“审核”请求。请先把审批卡片转发给我（30秒内），我会自动继续分析。');
+    return;
+  }
 
   if (ctx.instanceId) {
     const detail = await fetchApprovalDetail(ctx.instanceId);
