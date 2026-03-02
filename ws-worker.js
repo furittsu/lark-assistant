@@ -1,6 +1,8 @@
 const Lark = require('@larksuiteoapi/node-sdk');
 const axios = require('axios');
 const dotenv = require('dotenv');
+const fs = require('fs');
+const path = require('path');
 
 dotenv.config();
 
@@ -20,6 +22,8 @@ const baseConfig = {
   appId: APP_ID,
   appSecret: APP_SECRET,
 };
+
+const client = new Lark.Client(baseConfig);
 
 const wsClient = new Lark.WSClient({
   ...baseConfig,
@@ -48,6 +52,11 @@ for (const eventType of EVENT_TYPES) {
 
     // 先快速回执，AI 逻辑异步执行，避免飞书超时重推。
     queueMicrotask(async () => {
+      if (eventType === 'im.message.receive_v1') {
+        await handleMessageEvent(data);
+        return;
+      }
+
       const suggestion = await getAiSuggestion(
         `你是审批助手。请基于以下事件给出：建议结论、风险点、建议操作。事件：${JSON.stringify(data)}`
       );
@@ -56,6 +65,92 @@ for (const eventType of EVENT_TYPES) {
 
     return { ok: true };
   };
+}
+
+async function handleMessageEvent(data) {
+  const chatId = data?.message?.chat_id;
+  const rawContent = data?.message?.content || '{}';
+  const msgType = data?.message?.message_type;
+
+  if (!chatId || msgType !== 'text') {
+    return;
+  }
+
+  const text = extractText(rawContent);
+  if (!text) return;
+
+  if (!text.includes('审核') && !text.includes('审批')) {
+    return;
+  }
+
+  const ruleProfile = getRuleProfile(text);
+  const result = await reviewApprovalText(text, ruleProfile);
+  await sendText(chatId, result);
+}
+
+function extractText(content) {
+  try {
+    const parsed = JSON.parse(content);
+    return (parsed?.text || '').trim();
+  } catch {
+    return '';
+  }
+}
+
+function getRuleProfile(text) {
+  const upper = text.toUpperCase();
+  if (upper.includes('AP2-3')) {
+    return readRuleFile('ap2-3.json');
+  }
+  return readRuleFile('ap2-3.json');
+}
+
+function readRuleFile(name) {
+  const filePath = path.join(__dirname, 'rules', name);
+  if (!fs.existsSync(filePath)) {
+    return '{}';
+  }
+  return fs.readFileSync(filePath, 'utf8');
+}
+
+async function reviewApprovalText(text, ruleProfile) {
+  const prompt = `
+你是企业审批助手。用户把审批内容转发给你，你必须按规则先检查再给结论。
+
+输出必须包含：
+1) 建议结论（建议通过/建议拒绝/建议人工复核）
+2) 风险分（0-100）
+3) 命中规则
+4) 核心理由
+5) 需补充材料
+6) 建议在审批意见里填写的话术
+
+规则配置：
+${ruleProfile}
+
+用户转发文本：
+${text}
+`;
+
+  return getAiSuggestion(prompt);
+}
+
+async function sendText(chatId, text) {
+  const safeText = (text || '未生成结果').slice(0, 3000);
+  try {
+    await client.im.v1.message.create({
+      params: {
+        receive_id_type: 'chat_id',
+      },
+      data: {
+        receive_id: chatId,
+        msg_type: 'text',
+        content: JSON.stringify({ text: safeText }),
+      },
+    });
+  } catch (err) {
+    console.error('[SEND MESSAGE ERROR]', err.message);
+  }
 }
 
 wsClient.start({
