@@ -92,6 +92,7 @@ async function handleMessageEvent(data) {
       instanceId,
       cardTitle,
       mentionedOpenId,
+      cardRaw: rawContent,
       card,
     });
 
@@ -99,12 +100,12 @@ async function handleMessageEvent(data) {
       // 乱序容错：若先收到了“审核”文本，再收到卡片，则自动继续审核。
       if (prev.pendingReviewText && Date.now() - prev.pendingAt < PENDING_TTL_MS) {
         const detail = await fetchApprovalDetailSmart(chatId, prev.pendingReviewText);
+        let sourceText = '';
         if (!detail.ok) {
-          await sendText(chatId, `已收到审批卡片，但读取详情失败：${detail.error}`);
-          return;
+          sourceText = `${prev.pendingReviewText}\n\n[卡片内容]\n${extractCardText(chatContext.get(chatId)?.cardRaw || '')}`;
+        } else {
+          sourceText = `${prev.pendingReviewText}\n\n[审批详情]\n${detail.content}`;
         }
-
-        const sourceText = `${prev.pendingReviewText}\n\n[审批详情]\n${detail.content}`;
         const ruleProfile = getRuleProfile(prev.pendingReviewText);
         const result = await reviewApprovalText(sourceText, ruleProfile);
         await sendText(chatId, result);
@@ -157,8 +158,13 @@ async function handleMessageEvent(data) {
   if (detail.ok) {
     sourceText = `${text}\n\n[审批详情]\n${detail.content}`;
   } else {
-    await sendText(chatId, `读取审批详情失败：${detail.error}`);
-    return;
+    const ctx2 = chatContext.get(chatId) || {};
+    const cardText = extractCardText(ctx2.cardRaw || '');
+    if (!cardText) {
+      await sendText(chatId, `读取审批详情失败：${detail.error}`);
+      return;
+    }
+    sourceText = `${text}\n\n[卡片内容]\n${cardText}`;
   }
 
   const ruleProfile = getRuleProfile(text);
@@ -209,6 +215,23 @@ function extractSerialNo(text) {
   if (m?.[1]) return m[1];
   const m2 = text.match(/\b([0-9]{12})\b/);
   return m2?.[1] || '';
+}
+
+function extractCardText(rawContent) {
+  const card = parseJsonSafe(rawContent);
+  if (!card || typeof card !== 'object') return '';
+  const parts = [];
+  if (card.title) parts.push(`标题: ${card.title}`);
+  const elements = Array.isArray(card.elements) ? card.elements : [];
+  for (const el of elements) {
+    if (el?.text?.content) parts.push(el.text.content);
+    if (Array.isArray(el?.fields)) {
+      for (const f of el.fields) {
+        if (f?.text?.content) parts.push(f.text.content);
+      }
+    }
+  }
+  return parts.join('\n').trim();
 }
 
 function getRuleProfile(text) {
