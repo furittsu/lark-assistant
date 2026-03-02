@@ -82,15 +82,25 @@ async function handleMessageEvent(data) {
     const card = parseJsonSafe(rawContent);
     const cardUrl = card?.card_link?.url || card?.card_link?.pc_url || '';
     const instanceId = extractInstanceId(cardUrl);
-    if (instanceId) {
-      const prev = chatContext.get(chatId) || {};
-      chatContext.set(chatId, { ...prev, instanceId, card });
+    const cardTitle = (card?.title || '').trim();
+    const mentions = data?.message?.mentions || [];
+    const mentionedOpenId = mentions?.[0]?.id?.open_id || '';
 
+    const prev = chatContext.get(chatId) || {};
+    chatContext.set(chatId, {
+      ...prev,
+      instanceId,
+      cardTitle,
+      mentionedOpenId,
+      card,
+    });
+
+    if (instanceId) {
       // 乱序容错：若先收到了“审核”文本，再收到卡片，则自动继续审核。
       if (prev.pendingReviewText && Date.now() - prev.pendingAt < PENDING_TTL_MS) {
-        const detail = await fetchApprovalDetail(instanceId);
+        const detail = await fetchApprovalDetailSmart(chatId, prev.pendingReviewText);
         if (!detail.ok) {
-          await sendText(chatId, `已收到审批卡片，但读取详情失败：${detail.error}\n请确认应用已开通审批读取权限。`);
+          await sendText(chatId, `已收到审批卡片，但读取详情失败：${detail.error}`);
           return;
         }
 
@@ -104,7 +114,7 @@ async function handleMessageEvent(data) {
         delete latest.pendingAt;
         chatContext.set(chatId, latest);
       } else {
-        await sendText(chatId, '已收到审批卡片。请发送“审核”或“审核 + 你的规则”，我会按审批详情自动分析。');
+        await sendText(chatId, '已收到审批卡片。请发送“审核”或“审核 编号:202603020071”，我会自动分析。');
       }
     }
     return;
@@ -117,6 +127,15 @@ async function handleMessageEvent(data) {
   const text = extractText(rawContent);
   if (!text) return;
 
+  const serialNo = extractSerialNo(text);
+  if (serialNo) {
+    const prev = chatContext.get(chatId) || {};
+    chatContext.set(chatId, {
+      ...prev,
+      serialNo,
+    });
+  }
+
   if (!text.includes('审核') && !text.includes('审批')) {
     return;
   }
@@ -124,23 +143,22 @@ async function handleMessageEvent(data) {
   const ctx = chatContext.get(chatId) || {};
   let sourceText = text;
 
-  if (!ctx.instanceId) {
+  if (!ctx.instanceId && !ctx.serialNo && !serialNo) {
     chatContext.set(chatId, {
       ...ctx,
       pendingReviewText: text,
       pendingAt: Date.now(),
     });
-    await sendText(chatId, '我先记下你的“审核”请求。请先把审批卡片转发给我（30秒内），我会自动继续分析。');
+    await sendText(chatId, '我先记下你的“审核”请求。请转发审批卡片，或直接发“审核 编号:202603020071”。');
     return;
   }
 
-  if (ctx.instanceId) {
-    const detail = await fetchApprovalDetail(ctx.instanceId);
-    if (detail.ok) {
-      sourceText = `${text}\n\n[审批详情]\n${detail.content}`;
-    } else {
-      await sendText(chatId, `已识别到审批卡片，但读取详情失败：${detail.error}\n请确认应用已开通审批读取权限。`);
-    }
+  const detail = await fetchApprovalDetailSmart(chatId, text);
+  if (detail.ok) {
+    sourceText = `${text}\n\n[审批详情]\n${detail.content}`;
+  } else {
+    await sendText(chatId, `读取审批详情失败：${detail.error}`);
+    return;
   }
 
   const ruleProfile = getRuleProfile(text);
@@ -183,6 +201,14 @@ function extractInstanceId(url) {
   }
 
   return '';
+}
+
+function extractSerialNo(text) {
+  if (!text || typeof text !== 'string') return '';
+  const m = text.match(/(?:编号|流水号|serial)\s*[:：]?\s*([0-9]{8,})/i);
+  if (m?.[1]) return m[1];
+  const m2 = text.match(/\b([0-9]{12})\b/);
+  return m2?.[1] || '';
 }
 
 function getRuleProfile(text) {
@@ -241,11 +267,93 @@ async function sendText(chatId, text) {
   }
 }
 
-async function fetchApprovalDetail(instanceId) {
+async function fetchApprovalDetailSmart(chatId, text) {
+  const ctx = chatContext.get(chatId) || {};
+  const serialNo = extractSerialNo(text) || ctx.serialNo || '';
+
+  // 1) 先尝试把卡片 instanceId 当作 instance_code 调 get（某些场景可直接用）
+  if (ctx.instanceId) {
+    const direct = await fetchApprovalDetailByCode(ctx.instanceId);
+    if (direct.ok) return direct;
+  }
+
+  // 2) 用 query 查实例列表，再定位 instance.code
+  const queryRes = await queryApprovalInstances({
+    serialNo,
+    instanceTitle: ctx.cardTitle || '',
+    applicantOpenId: ctx.mentionedOpenId || '',
+  });
+
+  if (!queryRes.ok) return queryRes;
+
+  const matched = pickBestInstance(queryRes.list, {
+    serialNo,
+    instanceTitle: ctx.cardTitle || '',
+  });
+
+  if (!matched?.instance?.code) {
+    return { ok: false, error: '未匹配到审批实例，请补充“审核 编号:xxxx”或重新转发卡片。' };
+  }
+
+  const instanceCode = matched.instance.code;
+  const update = chatContext.get(chatId) || {};
+  update.instanceCode = instanceCode;
+  chatContext.set(chatId, update);
+
+  return fetchApprovalDetailByCode(instanceCode);
+}
+
+async function queryApprovalInstances({ serialNo, instanceTitle, applicantOpenId }) {
+  try {
+    const data = {
+      instance_status: 'ALL',
+      locale: 'zh-CN',
+    };
+    if (serialNo) data.instance_external_id = serialNo;
+    if (instanceTitle) data.instance_title = instanceTitle;
+    if (applicantOpenId) data.user_id = applicantOpenId;
+
+    const res = await client.approval.v4.instance.query({
+      data,
+      params: {
+        page_size: 50,
+        user_id_type: 'open_id',
+      },
+    });
+
+    if (res.code !== 0) {
+      return { ok: false, error: `${res.msg || '审批查询失败'} (code=${res.code})` };
+    }
+
+    return { ok: true, list: res?.data?.instance_list || [] };
+  } catch (err) {
+    return { ok: false, error: err.message };
+  }
+}
+
+function pickBestInstance(list, { serialNo, instanceTitle }) {
+  if (!Array.isArray(list) || list.length === 0) return null;
+
+  if (serialNo) {
+    const exact = list.find((item) => `${item?.instance?.serial_id || ''}` === `${serialNo}`);
+    if (exact) return exact;
+  }
+
+  if (instanceTitle) {
+    const byTitle = list.find((item) => `${item?.instance?.title || ''}`.includes(instanceTitle));
+    if (byTitle) return byTitle;
+  }
+
+  return list
+    .slice()
+    .sort((a, b) => Number(b?.instance?.start_time || 0) - Number(a?.instance?.start_time || 0))[0];
+}
+
+async function fetchApprovalDetailByCode(instanceCode) {
   try {
     const res = await client.approval.v4.instance.get({
       path: {
-        instance_id: instanceId,
+        instance_id: instanceCode,
       },
       params: {
         locale: 'zh-CN',
